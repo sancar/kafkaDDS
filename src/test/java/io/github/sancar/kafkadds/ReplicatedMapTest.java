@@ -177,14 +177,4 @@ public class ReplicatedMapTest {
         }
     }
 
-    @Test
-    public void TestJson() {
-        String json = toJson(new Records.WriteAttemptKey("key", 1));
-        assertEquals("{\"key\":\"key\",\"version\":1}", json);
-
-        Records.WriteAttemptKey key = toObject(json, Records.WriteAttemptKey.class);
-
-        assertEquals("key", key.key());
-        assertEquals(1, key.version());
-    }
 }

@@ -35,7 +35,7 @@ public class InmemoryTotalOrderBroadcast implements TotalOrderBroadcast {
             ArrayList<Message> messages = log.consume(consumeOffset);
             if (!messages.isEmpty()) {
                 Message message = messages.get(messages.size() - 1);
-                consumeOffset = (int) message.offset();
+                consumeOffset = (int) message.offset() + 1;
                 return messages;
             }
             try {

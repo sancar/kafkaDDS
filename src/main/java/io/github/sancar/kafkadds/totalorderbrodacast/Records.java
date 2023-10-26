@@ -12,7 +12,9 @@ public class Records {
     // Wait Key. Value of WaitKey is "true"
     public record WaitKey(String waitKey) { private static final String keyType = "WAIT_KEY";}
 
-    // Value is the String
-    public record WriteAttemptKey(String key, int version) { private static final String keyType = "WRITE_ATTEMPT";}
+    public record WriteAttemptKey(String key) { private static final String keyType = "WRITE_ATTEMPT";}
+
+    public record WriteAttemptValue(int version, String value) {
+    }
 
 }

@@ -3,9 +3,7 @@ package io.github.sancar.kafkadds.totalorderbrodacast;
 
 import org.apache.kafka.clients.ClientDnsLookup;
 import org.apache.kafka.clients.CommonClientConfigs;
-import org.apache.kafka.clients.admin.Admin;
-import org.apache.kafka.clients.admin.AdminClientConfig;
-import org.apache.kafka.clients.admin.NewTopic;
+import org.apache.kafka.clients.admin.*;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
@@ -13,6 +11,7 @@ import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
+import org.apache.kafka.common.config.ConfigResource;
 import org.apache.kafka.common.errors.TopicExistsException;
 import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.serialization.StringDeserializer;
@@ -21,6 +20,7 @@ import org.apache.kafka.common.serialization.StringSerializer;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 
 import static java.util.Collections.singleton;
 
@@ -33,7 +33,7 @@ public class KafkaBroadcast implements TotalOrderBroadcast {
     private final KafkaProducer<String, String> producer;
 
     public KafkaBroadcast(Properties userProperties) {
-//        createTopic(userProperties);
+        createTopic(userProperties);
         consumer = new KafkaConsumer<>(consumerProperties(userProperties));
         consumer.subscribe(Collections.singleton(topic));
         producer = new KafkaProducer<>(producerProperties(userProperties));
@@ -42,20 +42,38 @@ public class KafkaBroadcast implements TotalOrderBroadcast {
     private static void createTopic(Properties userProperties) {
         try (Admin admin = Admin.create(userProperties)) {
             try {
-                admin.createTopics(singleton(new NewTopic(topic, 1, (short) 3)))
+                NewTopic newTopic = new NewTopic(topic, 1, (short) 3);
+                HashMap<String, String> map = new HashMap<>();
+                map.put("min.compaction.lag.ms", String.valueOf(TimeUnit.HOURS.toMillis(1)));
+                map.put("cleanup.policy", "compact");
+                newTopic.configs(map);
+                admin.createTopics(singleton(newTopic))
                         .all().get();
             } catch (ExecutionException executionException) {
                 if (executionException.getCause() instanceof TopicExistsException) {
-//                    DescribeTopicsResult describeTopicsResult = admin.describeTopics(singleton(topic));
-//                    int partitionCount = 0;
-//                    try {
-//                        partitionCount = describeTopicsResult.topicIdValues().get(topic).get().partitions().size();
-//                    } catch (InterruptedException | ExecutionException e) {
-//                        throw new RuntimeException(e);
-//                    }
-//                    if (partitionCount != 1) {
-//                        throw new RuntimeException("Partition count of " + topic + " must be 1");
-//                    }
+                    DescribeTopicsResult describeTopicsResult = admin.describeTopics(singleton(topic));
+                    try {
+                        var topicIdValues = describeTopicsResult.topicNameValues();
+                        var desc = topicIdValues.get(topic).get();
+                        int partitionCount = desc.partitions().size();
+                        if (partitionCount != 1) {
+                            throw new RuntimeException("Partition count of " + topic + " must be 1");
+                        }
+                        ConfigResource configResource = new ConfigResource(ConfigResource.Type.TOPIC, topic);
+                        var configs = admin.describeConfigs(singleton(configResource)).values();
+                        Config config = configs.get(configResource).get();
+                        ConfigEntry configEntry = config.get("min.compaction.lag.ms");
+                        if (Long.parseLong(configEntry.value()) < TimeUnit.HOURS.toMillis(1)) {
+                            throw new RuntimeException("`min.compaction.lag.ms` is too short for replicated map. Make it at least 1 hour");
+                        }
+                        ConfigEntry cleanupPolicy = config.get("cleanup.policy");
+                        if (!cleanupPolicy.value().equals("compact")) {
+                            throw new RuntimeException("`cleanup.policy` must be `compact` for replicated map.");
+                        }
+
+                    } catch (InterruptedException | ExecutionException e) {
+                        throw new RuntimeException(e);
+                    }
                 } else {
                     throw new RuntimeException(executionException.getCause());
                 }
@@ -66,7 +84,7 @@ public class KafkaBroadcast implements TotalOrderBroadcast {
     }
 
     private static Properties producerProperties(Properties props) {
-        var name = "lineraizableProducer/" + instanceId;
+        var name = "linearizableProducer/" + instanceId;
         props.put(CommonClientConfigs.CLIENT_DNS_LOOKUP_CONFIG, ClientDnsLookup.USE_ALL_DNS_IPS.toString());
         props.put(CommonClientConfigs.CLIENT_ID_CONFIG, name);
         props.put(ProducerConfig.ACKS_CONFIG, "all");
@@ -79,13 +97,12 @@ public class KafkaBroadcast implements TotalOrderBroadcast {
 
     private Properties consumerProperties(Properties props) {
         props.put(CommonClientConfigs.CLIENT_DNS_LOOKUP_CONFIG, ClientDnsLookup.USE_ALL_DNS_IPS.toString());
-        props.put(AdminClientConfig.DEFAULT_API_TIMEOUT_MS_CONFIG, Duration.ofMillis(5).getNano() / 1000);
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, true);
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
         props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
         props.put(ConsumerConfig.GROUP_ID_CONFIG, topic + "-" + UUID.randomUUID());
-        props.put(CommonClientConfigs.CLIENT_ID_CONFIG, "linearaiableConsumer" + "-" + instanceId);
+        props.put(CommonClientConfigs.CLIENT_ID_CONFIG, "linearizableConsumer" + "-" + instanceId);
         return props;
     }
 

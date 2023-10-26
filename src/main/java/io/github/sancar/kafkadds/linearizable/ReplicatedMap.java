@@ -1,11 +1,11 @@
 package io.github.sancar.kafkadds.linearizable;
 
 
-import org.jetbrains.annotations.NotNull;
 import io.github.sancar.kafkadds.totalorderbrodacast.Message;
 import io.github.sancar.kafkadds.totalorderbrodacast.Records;
 import io.github.sancar.kafkadds.totalorderbrodacast.TotalOrderBroadcast;
 import io.github.sancar.kafkadds.util.ValueBarrier;
+import org.jetbrains.annotations.NotNull;
 
 import java.io.Closeable;
 import java.util.*;
@@ -46,19 +46,20 @@ public class ReplicatedMap implements ConcurrentMap<String, String>, Closeable {
                     if (Records.HeaderValues.WRITE_ATTEMPT.equals(message.op())) {
                         try {
                             lock.lock();
-                            Records.WriteAttemptKey key = toObject(message.key(), Records.WriteAttemptKey.class);
-                            VersionedValue old = data.get(key.key());
+                            Records.WriteAttemptKey attempt = toObject(message.key(), Records.WriteAttemptKey.class);
+                            VersionedValue old = data.get(attempt.key());
                             int existingVersion = 0;
                             if (old != null) {
                                 existingVersion = old.version;
                             }
 
-                            var newValue = new VersionedValue(key.version(), message.value());
-                            if (key.version() > existingVersion) {
-                                data.put(key.key(), newValue);
+                            Records.WriteAttemptValue value = toObject(message.value(), Records.WriteAttemptValue.class);
+                            var newValue = new VersionedValue(value.version(), value.value());
+                            if (value.version() > existingVersion) {
+                                data.put(attempt.key(), newValue);
                             }
 
-                            List<CompletableFuture<VersionedValue>> futures = waitMap.remove(message.key());
+                            List<CompletableFuture<VersionedValue>> futures = waitMap.remove(attempt.key() + ":" + value.version());
                             if (futures != null) {
                                 futures.forEach(f -> f.complete(newValue));
                             }
@@ -108,8 +109,7 @@ public class ReplicatedMap implements ConcurrentMap<String, String>, Closeable {
             nextVersion = existingVal.version + 1;
         }
 
-        String jsonKey = toJson(new Records.WriteAttemptKey(key, nextVersion));
-        totalOrderBroadcast.offer(jsonKey, value, Records.HeaderValues.WRITE_ATTEMPT);
+        totalOrderBroadcastOffer(key, value, nextVersion);
 
         if (existingVal == null) {
             return null;
@@ -155,7 +155,7 @@ public class ReplicatedMap implements ConcurrentMap<String, String>, Closeable {
         int nextVersion;
         CompletableFuture<VersionedValue> f = new CompletableFuture<>();
 
-        String jsonKey;
+
         try {
             lock.lock();
             VersionedValue existingVal = data.get(key);
@@ -168,13 +168,12 @@ public class ReplicatedMap implements ConcurrentMap<String, String>, Closeable {
                 nextVersion = existingVal.version + 1;
             }
 
-            jsonKey = toJson(new Records.WriteAttemptKey(key, nextVersion));
-            registerToWaitFirstMessage(f, jsonKey);
+            registerToWaitFirstMessage(f, key, nextVersion);
         } finally {
             lock.unlock();
         }
 
-        totalOrderBroadcast.offer(jsonKey, value, Records.HeaderValues.WRITE_ATTEMPT);
+        totalOrderBroadcastOffer(key, value, nextVersion);
 
         VersionedValue firstMessageBack = f.join();
         // if the first message we get back is ours. Then putIfAbsent is successful.
@@ -185,8 +184,8 @@ public class ReplicatedMap implements ConcurrentMap<String, String>, Closeable {
         return firstMessageBack.value;
     }
 
-    private void registerToWaitFirstMessage(CompletableFuture<VersionedValue> f, String jsonKey) {
-        waitMap.compute(jsonKey, (s, futures) -> {
+    private void registerToWaitFirstMessage(CompletableFuture<VersionedValue> f, String key, int version) {
+        waitMap.compute(key + ":" + version, (s, futures) -> {
             if (futures == null) {
                 futures = new LinkedList<>();
             }
@@ -206,7 +205,6 @@ public class ReplicatedMap implements ConcurrentMap<String, String>, Closeable {
         int nextVersion;
         CompletableFuture<VersionedValue> f = new CompletableFuture<>();
 
-        String jsonKey;
         try {
             lock.lock();
             VersionedValue existingVal = data.get(key);
@@ -218,18 +216,23 @@ public class ReplicatedMap implements ConcurrentMap<String, String>, Closeable {
             }
             nextVersion = existingVal.version + 1;
 
-            jsonKey = toJson(new Records.WriteAttemptKey(key, nextVersion));
-            registerToWaitFirstMessage(f, jsonKey);
+            registerToWaitFirstMessage(f, key, nextVersion);
         } finally {
             lock.unlock();
         }
 
-        totalOrderBroadcast.offer(jsonKey, newValue, Records.HeaderValues.WRITE_ATTEMPT);
+        totalOrderBroadcastOffer(key, newValue, nextVersion);
 
         VersionedValue firstMessageBack = f.join();
         // if the first message we get back is ours. Then `replace` is successful.
         // otherwise, there was another set/remove, replace failed.
         return newValue.equals(firstMessageBack.value);
+    }
+
+    private void totalOrderBroadcastOffer(@NotNull String key, String newValue, int nextVersion) {
+        String jsonKey = toJson(new Records.WriteAttemptKey(key));
+        String jsonValue = toJson(new Records.WriteAttemptValue(nextVersion, newValue));
+        totalOrderBroadcast.offer(jsonKey, jsonValue, Records.HeaderValues.WRITE_ATTEMPT);
     }
 
     @Override
@@ -249,8 +252,7 @@ public class ReplicatedMap implements ConcurrentMap<String, String>, Closeable {
             lock.unlock();
         }
 
-        String jsonKey = toJson(new Records.WriteAttemptKey(key, nextVersion));
-        totalOrderBroadcast.offer(jsonKey, value, Records.HeaderValues.WRITE_ATTEMPT);
+        totalOrderBroadcastOffer(key, value, nextVersion);
         return existingVal.value;
     }
 
@@ -266,8 +268,7 @@ public class ReplicatedMap implements ConcurrentMap<String, String>, Closeable {
             nextVersion = existingVal.version + 1;
         }
 
-        String jsonKey = toJson(new Records.WriteAttemptKey((String) key, nextVersion));
-        totalOrderBroadcast.offer(jsonKey, null, Records.HeaderValues.WRITE_ATTEMPT);
+        totalOrderBroadcastOffer((String) key, null, nextVersion);
 
         return existingVal.value;
     }

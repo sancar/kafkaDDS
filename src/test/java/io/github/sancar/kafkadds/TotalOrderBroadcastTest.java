@@ -46,11 +46,7 @@ public class TotalOrderBroadcastTest {
         }
 
         consume = totalOrderBroadcast.consume();
-        assertEquals(150, consume.size());
+        assertEquals(50, consume.size());
         consume.forEach(message -> assertEquals(message.value(), messages.get(message.offset())));
-
-
-        consume = totalOrderBroadcast.consume();
-        assertEquals(100, consume.size());
     }
 }
